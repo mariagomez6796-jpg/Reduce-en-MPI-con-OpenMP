@@ -2,503 +2,265 @@
 #include <omp.h>
 
 #include <iostream>
-#include <fstream>
-#include <sstream>
 #include <iomanip>
-#include <string>
 #include <climits>
-#include <cstdlib>
-#include <ctime>
 
-#include "Busquedas.h"
+#include "OperacionesArreglos.h"
 
-// ============================================================
-// VARIABLES PARA RESULTADOS
-// ============================================================
 
-struct Tiempos
-{
-    double ordenamientoSecuencial = 0.0;
-    double ordenamientoParalelo = 0.0;
-
-    double busquedaSecuencialLocal = 0.0;
-    double busquedaSecuencialDistribuida = 0.0;
-
-    double busquedaBinariaLocal = 0.0;
-    double busquedaBinariaDistribuida = 0.0;
-};
-
-// ============================================================
-// ENCABEZADO DEL LOG
-// ============================================================
-
-void encabezadoLog(
-    std::ofstream& log,
-    const std::string& equipo,
-    int rank,
-    int procesos
-)
-{
-    std::ostringstream salida;
-
-    salida
-        << "\n============================================\n"
-        << " BUSQUEDA PARALELA DISTRIBUIDA MPI + OPENMP\n"
-        << " PRACTICA 1.5\n"
-        << "============================================\n"
-        << "Equipo / Host: " << equipo << "\n"
-        << "Nodo MPI: " << rank << "\n"
-        << "Procesos MPI: " << procesos << "\n"
-        << "Hilos OpenMP disponibles: "
-        << omp_get_max_threads() << "\n"
-        << "Fecha y hora: " << obtenerFechaHora() << "\n"
-        << "============================================";
-
-    imprimirYLog(log, salida.str());
-}
-
-// ============================================================
-// CALCULAR DISTRIBUCION
-// ============================================================
-
-void calcularDistribucion(
-    long long n,
-    int procesos,
-    int* cantidades,
-    int* desplazamientos
-)
-{
-    long long base = n / procesos;
-    long long sobrante = n % procesos;
-
-    long long offset = 0;
-
-    for (int i = 0; i < procesos; i++)
-    {
-        long long cantidad =
-            base + (i < sobrante ? 1 : 0);
-
-        cantidades[i] =
-            static_cast<int>(cantidad);
-
-        desplazamientos[i] =
-            static_cast<int>(offset);
-
-        offset += cantidad;
-    }
-}
-
-// ============================================================
-// BUSQUEDA DISTRIBUIDA LINEAL
-// ============================================================
-
-long long ejecutarBusquedaSecuencialDistribuida(
-    int* arregloGlobal,
-    long long n,
-    int target,
-    int rank,
-    int procesos,
-    bool detallado,
-    std::ofstream& log,
-    const std::string& equipo,
-    double& tiempo
-)
-{
-    int* cantidades = new int[procesos];
-    int* desplazamientos = new int[procesos];
-
-    calcularDistribucion(
-        n,
-        procesos,
-        cantidades,
-        desplazamientos
-    );
-
-    int cantidadLocal =
-        cantidades[rank];
-
-    int* bloqueLocal =
-        new int[cantidadLocal];
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    double inicio = MPI_Wtime();
-
-    MPI_Scatterv(
-        arregloGlobal,
-        cantidades,
-        desplazamientos,
-        MPI_INT,
-        bloqueLocal,
-        cantidadLocal,
-        MPI_INT,
-        0,
-        MPI_COMM_WORLD
-    );
-
-    long long resultadoLocal =
-        busquedaLinealOpenMP(
-            bloqueLocal,
-            cantidadLocal,
-            target,
-            desplazamientos[rank],
-            detallado,
-            log,
-            rank,
-            equipo
-        );
-
-    long long valorReducir =
-        (resultadoLocal == -1)
-        ? LLONG_MAX
-        : resultadoLocal;
-
-    long long resultadoGlobal =
-        LLONG_MAX;
-
-    MPI_Reduce(
-        &valorReducir,
-        &resultadoGlobal,
-        1,
-        MPI_LONG_LONG,
-        MPI_MIN,
-        0,
-        MPI_COMM_WORLD
-    );
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    double fin = MPI_Wtime();
-
-    tiempo = fin - inicio;
-
-    delete[] bloqueLocal;
-    delete[] cantidades;
-    delete[] desplazamientos;
-
-    if (rank == 0)
-    {
-        if (resultadoGlobal == LLONG_MAX)
-            return -1;
-
-        return resultadoGlobal;
-    }
-
-    return -1;
-}
-
-// ============================================================
-// BUSQUEDA DISTRIBUIDA BINARIA
-// ============================================================
-
-long long ejecutarBusquedaBinariaDistribuida(
-    int* arregloGlobal,
-    long long n,
-    int target,
-    int rank,
-    int procesos,
-    bool detallado,
-    std::ofstream& log,
-    const std::string& equipo,
-    double& tiempo
-)
-{
-    int* cantidades = new int[procesos];
-    int* desplazamientos = new int[procesos];
-
-    calcularDistribucion(
-        n,
-        procesos,
-        cantidades,
-        desplazamientos
-    );
-
-    int cantidadLocal =
-        cantidades[rank];
-
-    int* bloqueLocal =
-        new int[cantidadLocal];
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    double inicio = MPI_Wtime();
-
-    MPI_Scatterv(
-        arregloGlobal,
-        cantidades,
-        desplazamientos,
-        MPI_INT,
-        bloqueLocal,
-        cantidadLocal,
-        MPI_INT,
-        0,
-        MPI_COMM_WORLD
-    );
-
-    long long resultadoLocal = -1;
-
-    if (cantidadLocal > 0)
-    {
-        // Primero comprobamos si el target puede estar
-        // dentro de los valores almacenados en este bloque.
-        if (target >= bloqueLocal[0] &&
-            target <= bloqueLocal[cantidadLocal - 1])
-        {
-            resultadoLocal =
-                busquedaBinariaOpenMP(
-                    bloqueLocal,
-                    cantidadLocal,
-                    target,
-                    desplazamientos[rank],
-                    detallado,
-                    log,
-                    rank,
-                    equipo
-                );
-        }
-        else if (detallado)
-        {
-            std::ostringstream salida;
-
-            salida
-                << "[Equipo: " << equipo << "] "
-                << "[Nodo MPI: " << rank << "] "
-                << "[Bloque global: "
-                << desplazamientos[rank]
-                << " - "
-                << desplazamientos[rank]
-                + cantidadLocal - 1
-                << "] "
-                << "[Busqueda Binaria] "
-                << "[Target fuera del rango de valores]";
-
-            imprimirYLog(log, salida.str());
-        }
-    }
-
-    long long valorReducir =
-        resultadoLocal == -1
-        ? LLONG_MAX
-        : resultadoLocal;
-
-    long long resultadoGlobal =
-        LLONG_MAX;
-
-    MPI_Reduce(
-        &valorReducir,
-        &resultadoGlobal,
-        1,
-        MPI_LONG_LONG,
-        MPI_MIN,
-        0,
-        MPI_COMM_WORLD
-    );
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    double fin = MPI_Wtime();
-
-    tiempo = fin - inicio;
-
-    delete[] bloqueLocal;
-    delete[] cantidades;
-    delete[] desplazamientos;
-
-    if (rank == 0)
-    {
-        if (resultadoGlobal == LLONG_MAX)
-            return -1;
-
-        return resultadoGlobal;
-    }
-
-    return -1;
-}
-
-// ============================================================
-// MOSTRAR COMPARATIVA
-// ============================================================
-
-void mostrarComparativa(
-    const Tiempos& t,
-    int procesos
-)
-{
-    std::cout
-        << "\n============================================\n"
-        << " COMPARATIVA DE RENDIMIENTO\n"
-        << "============================================\n";
-
-    std::cout << std::fixed << std::setprecision(8);
-
-    std::cout
-        << "\nORDENAMIENTO\n"
-        << "Secuencial: "
-        << t.ordenamientoSecuencial << " s\n"
-        << "OpenMP:     "
-        << t.ordenamientoParalelo << " s\n";
-
-    if (t.ordenamientoParalelo > 0)
-    {
-        std::cout
-            << "Speedup OpenMP: "
-            << t.ordenamientoSecuencial /
-            t.ordenamientoParalelo
-            << "x\n";
-    }
-
-    std::cout
-        << "\nBUSQUEDA SECUENCIAL\n"
-        << "Local OpenMP:       "
-        << t.busquedaSecuencialLocal << " s\n"
-        << "Distribuida MPI+OMP:"
-        << t.busquedaSecuencialDistribuida
-        << " s\n";
-
-    if (t.busquedaSecuencialDistribuida > 0)
-    {
-        double speedup =
-            t.busquedaSecuencialLocal /
-            t.busquedaSecuencialDistribuida;
-
-        double eficiencia =
-            (speedup / procesos) * 100.0;
-
-        std::cout
-            << "Speedup distribuido: "
-            << speedup << "x\n"
-            << "Eficiencia MPI: "
-            << eficiencia << "%\n";
-    }
-
-    std::cout
-        << "\nBUSQUEDA BINARIA\n"
-        << "Local OpenMP:        "
-        << t.busquedaBinariaLocal << " s\n"
-        << "Distribuida MPI+OMP: "
-        << t.busquedaBinariaDistribuida
-        << " s\n";
-
-    if (t.busquedaBinariaDistribuida > 0)
-    {
-        double speedup =
-            t.busquedaBinariaLocal /
-            t.busquedaBinariaDistribuida;
-
-        double eficiencia =
-            (speedup / procesos) * 100.0;
-
-        std::cout
-            << "Speedup distribuido: "
-            << speedup << "x\n"
-            << "Eficiencia MPI: "
-            << eficiencia << "%\n";
-    }
-
-    std::cout
-        << "============================================\n";
-}
-
-// ============================================================
-// MAIN
-// ============================================================
-
-int main(int argc, char** argv)
-{
-    // ========================================================
-    // INICIALIZAR MPI
-    // ========================================================
-
-    int soporteHilos = 0;
-
-    MPI_Init_thread(
-        &argc,
-        &argv,
-        MPI_THREAD_FUNNELED,
-        &soporteHilos
-    );
-
-    int rank;
-    int procesos;
-
-    MPI_Comm_rank(
-        MPI_COMM_WORLD,
-        &rank
-    );
-
-    MPI_Comm_size(
-        MPI_COMM_WORLD,
-        &procesos
-    );
+int main(int argc, char* argv[]) {
 
     // ========================================================
-    // INFORMACION DEL EQUIPO
+    // INICIAR MPI
     // ========================================================
 
-    std::string equipo =
-        obtenerNombreEquipo();
+    MPI_Init(&argc, &argv);
 
-    std::ostringstream nombreLog;
+    int nodo;
+    int totalNodos;
 
-    nombreLog
-        << "log_equipo_"
-        << equipo
-        << "_nodo_"
-        << rank
-        << ".txt";
+    MPI_Comm_rank(MPI_COMM_WORLD, &nodo);
+    MPI_Comm_size(MPI_COMM_WORLD, &totalNodos);
 
-    std::ofstream log(
-        nombreLog.str(),
-        std::ios::app
+
+    // ========================================================
+    // OBTENER NOMBRE DE LA COMPUTADORA
+    // ========================================================
+
+    char nombrePC[MPI_MAX_PROCESSOR_NAME];
+    int longitudNombre;
+
+    MPI_Get_processor_name(
+        nombrePC,
+        &longitudNombre
     );
 
-    encabezadoLog(
-        log,
-        equipo,
-        rank,
-        procesos
-    );
 
     // ========================================================
-    // VARIABLES PRINCIPALES
+    // DATOS GENERALES
     // ========================================================
 
-    int* arreglo = nullptr;
+    OperacionesArreglos operaciones;
 
-    long long n = 0;
+    int opcion = -1;
 
-    int maxValor = 1000;
+    const int tamanio = 4000000;
 
-    bool arregloGenerado = false;
-    bool arregloOrdenado = false;
+    int* A = nullptr;
 
-    Tiempos tiempos;
+    int trabajadores = totalNodos - 1;
 
-    int opcion = 0;
 
     // ========================================================
-    // CICLO PRINCIPAL
+    // VALIDAR 3 PROCESOS
     // ========================================================
 
-    do
-    {
-        if (rank == 0)
-        {
+    if (totalNodos != 3) {
+
+        if (nodo == 0) {
+
             std::cout
-                << "\n==============================================\n"
-                << " BUSQUEDA PARALELA DISTRIBUIDA MPI + OPENMP\n"
-                << "==============================================\n"
-                << "1. Generar arreglo dinamico\n"
-                << "2. Ordenar arreglo con OpenMP\n"
-                << "3. Busqueda secuencial (Local vs Distribuida)\n"
-                << "4. Busqueda binaria (Local vs Distribuida)\n"
-                << "5. Mostrar tiempos y comparativa\n"
-                << "6. Salir\n"
-                << "==============================================\n"
+                << "\nERROR: La ejecucion distribuida "
+                << "requiere 3 procesos MPI.\n";
+
+            std::cout
+                << "MPI 0 = Maestro\n";
+
+            std::cout
+                << "MPI 1 = Trabajador 1\n";
+
+            std::cout
+                << "MPI 2 = Trabajador 2\n";
+        }
+
+        MPI_Finalize();
+
+        return 0;
+    }
+
+
+    // ========================================================
+    // DISTRIBUCION
+    // ========================================================
+
+    int elementosPorTrabajador =
+        tamanio / trabajadores;
+
+
+    // ========================================================
+    // IDENTIFICAR COMPUTADORAS
+    // ========================================================
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    for (int i = 0; i < totalNodos; i++) {
+
+        if (nodo == i) {
+
+            std::cout
+                << "\n----------------------------------------\n";
+
+            std::cout
+                << "PC: "
+                << nombrePC
+                << std::endl;
+
+            std::cout
+                << "Proceso MPI: "
+                << nodo
+                << " de "
+                << totalNodos
+                << std::endl;
+
+            std::cout
+                << "Hilos OpenMP disponibles: "
+                << omp_get_max_threads()
+                << std::endl;
+
+
+            if (nodo == 0) {
+
+                std::cout
+                    << "ROL: MAESTRO"
+                    << std::endl;
+            }
+
+            else {
+
+                int inicioGlobal =
+                    (nodo - 1)
+                    * elementosPorTrabajador;
+
+                int finGlobal =
+                    inicioGlobal
+                    + elementosPorTrabajador
+                    - 1;
+
+
+                std::cout
+                    << "ROL: TRABAJADOR"
+                    << std::endl;
+
+                std::cout
+                    << "Rango asignado: A["
+                    << inicioGlobal
+                    << "] - A["
+                    << finGlobal
+                    << "]"
+                    << std::endl;
+
+                std::cout
+                    << "Elementos asignados: "
+                    << elementosPorTrabajador
+                    << std::endl;
+            }
+
+
+            std::cout
+                << "----------------------------------------\n";
+        }
+
+
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+
+    // ========================================================
+    // INFORMACION GENERAL
+    // ========================================================
+
+    if (nodo == 0) {
+
+        std::cout
+            << "\n========================================\n";
+
+        std::cout
+            << "   MPI + OPENMP DISTRIBUIDO\n";
+
+        std::cout
+            << "========================================\n";
+
+        std::cout
+            << "Computadora maestra: "
+            << nombrePC
+            << std::endl;
+
+        std::cout
+            << "Procesos MPI: "
+            << totalNodos
+            << std::endl;
+
+        std::cout
+            << "Trabajadores: "
+            << trabajadores
+            << std::endl;
+
+        std::cout
+            << "Elementos totales: "
+            << tamanio
+            << std::endl;
+
+        std::cout
+            << "Elementos por trabajador: "
+            << elementosPorTrabajador
+            << std::endl;
+
+        std::cout
+            << "Valores aleatorios: 1 - 1000000\n";
+
+        std::cout
+            << "========================================\n";
+    }
+
+
+    // ========================================================
+    // MENU
+    // ========================================================
+
+    do {
+
+        if (nodo == 0) {
+
+            std::cout
+                << "\n============== MENU ==============\n";
+
+            std::cout
+                << "1. Crear arreglo\n";
+
+            std::cout
+                << "6. Llenar secuencial\n";
+
+            std::cout
+                << "7. Llenar aleatorio\n";
+
+            std::cout
+                << "8. Sumatoria\n";
+
+            std::cout
+                << "9. Promedio\n";
+
+            std::cout
+                << "10. Maximo\n";
+
+            std::cout
+                << "11. Minimo\n";
+
+            std::cout
+                << "0. Salir\n";
+
+            std::cout
+                << "==================================\n";
+
+            std::cout
                 << "Seleccione una opcion: ";
 
             std::cin >> opcion;
         }
+
+
+        // ====================================================
+        // ENVIAR OPCION A TODOS
+        // ====================================================
 
         MPI_Bcast(
             &opcion,
@@ -508,637 +270,882 @@ int main(int argc, char** argv)
             MPI_COMM_WORLD
         );
 
+
         // ====================================================
-        // OPCION 1
+        // 1. CREAR ARREGLO
         // ====================================================
 
-        if (opcion == 1)
-        {
-            if (rank == 0)
-            {
-                if (arreglo != nullptr)
-                {
-                    delete[] arreglo;
-                    arreglo = nullptr;
+        if (opcion == 1) {
+
+            MPI_Barrier(MPI_COMM_WORLD);
+
+            double inicio =
+                MPI_Wtime();
+
+
+            if (nodo == 0) {
+
+                if (A != nullptr) {
+
+                    delete[] A;
+
+                    A = nullptr;
                 }
 
-                std::cout
-                    << "\nCantidad de elementos: ";
 
-                std::cin >> n;
+                A =
+                    new int[tamanio];
 
-                std::cout
-                    << "Valor maximo aleatorio: ";
 
-                std::cin >> maxValor;
+                #pragma omp parallel for
+                for (int i = 0; i < tamanio; i++) {
 
-                if (n <= 0)
-                {
-                    std::cout
-                        << "Tamano invalido.\n";
-
-                    arregloGenerado = false;
-                }
-                else
-                {
-                    arreglo =
-                        new int[n];
-
-                    llenarArregloAleatorio(
-                        arreglo,
-                        n,
-                        maxValor
-                    );
-
-                    arregloGenerado = true;
-                    arregloOrdenado = false;
-
-                    std::cout
-                        << "\nArreglo generado correctamente.\n"
-                        << "Elementos: "
-                        << n << "\n"
-                        << "Memoria aproximada: "
-                        << (n * sizeof(int))
-                        / (1024.0 * 1024.0)
-                        << " MB\n";
-
-                    escribirLog(
-                        log,
-                        "Arreglo dinamico generado con "
-                        + std::to_string(n)
-                        + " elementos."
-                    );
-
-                    // Para arreglo pequeño mostramos todo.
-                    if (n <= 100)
-                    {
-                        mostrarArreglo(
-                            arreglo,
-                            n,
-                            log
-                        );
-                    }
+                    A[i] = 0;
                 }
             }
 
-            int generado =
-                arregloGenerado ? 1 : 0;
 
-            MPI_Bcast(
-                &generado,
-                1,
-                MPI_INT,
-                0,
-                MPI_COMM_WORLD
-            );
+            MPI_Barrier(MPI_COMM_WORLD);
 
-            MPI_Bcast(
-                &n,
+            double fin =
+                MPI_Wtime();
+
+
+            if (nodo == 0) {
+
+                std::cout
+                    << "\nArreglo A creado correctamente.\n";
+
+                std::cout
+                    << "Elementos: "
+                    << tamanio
+                    << std::endl;
+
+                std::cout
+                    << "Memoria aproximada: "
+                    << (
+                        static_cast<double>(
+                            tamanio * sizeof(int)
+                        ) / (1024.0 * 1024.0)
+                    )
+                    << " MB\n";
+
+                std::cout
+                    << "Tiempo: "
+                    << (fin - inicio)
+                    << " segundos\n";
+            }
+        }
+
+
+        // ====================================================
+        // 6. LLENAR SECUENCIAL
+        // ====================================================
+
+        else if (opcion == 6) {
+
+            MPI_Barrier(MPI_COMM_WORLD);
+
+            double inicio =
+                MPI_Wtime();
+
+
+            if (nodo != 0) {
+
+                int cantidad =
+                    elementosPorTrabajador;
+
+                int inicioGlobal =
+                    (nodo - 1)
+                    * elementosPorTrabajador;
+
+                int finGlobal =
+                    inicioGlobal
+                    + cantidad
+                    - 1;
+
+
+                std::cout
+                    << "\nPC: "
+                    << nombrePC
+                    << " | MPI: "
+                    << nodo
+                    << " | Procesando A["
+                    << inicioGlobal
+                    << "] - A["
+                    << finGlobal
+                    << "]"
+                    << std::endl;
+
+
+                int* parte =
+                    new int[cantidad];
+
+
+                operaciones.llenarSecuencialMPI(
+                    parte,
+                    cantidad,
+                    nombrePC,
+                    nodo,
+                    inicioGlobal
+                );
+
+
+                MPI_Send(
+                    parte,
+                    cantidad,
+                    MPI_INT,
+                    0,
+                    100,
+                    MPI_COMM_WORLD
+                );
+
+
+                delete[] parte;
+            }
+
+            else {
+
+                if (A == nullptr) {
+
+                    A =
+                        new int[tamanio];
+                }
+
+
+                for (
+                    int trabajador = 1;
+                    trabajador < totalNodos;
+                    trabajador++
+                ) {
+
+                    int inicioGlobal =
+                        (trabajador - 1)
+                        * elementosPorTrabajador;
+
+
+                    MPI_Recv(
+                        A + inicioGlobal,
+                        elementosPorTrabajador,
+                        MPI_INT,
+                        trabajador,
+                        100,
+                        MPI_COMM_WORLD,
+                        MPI_STATUS_IGNORE
+                    );
+                }
+            }
+
+
+            MPI_Barrier(MPI_COMM_WORLD);
+
+            double fin =
+                MPI_Wtime();
+
+
+            if (nodo == 0) {
+
+                std::cout
+                    << "\nArreglo secuencial generado.\n";
+
+                std::cout
+                    << "Primer elemento: "
+                    << A[0]
+                    << std::endl;
+
+                std::cout
+                    << "Ultimo elemento: "
+                    << A[tamanio - 1]
+                    << std::endl;
+
+                std::cout
+                    << "Tiempo distribuido: "
+                    << (fin - inicio)
+                    << " segundos\n";
+            }
+        }
+
+
+        // ====================================================
+        // 7. LLENAR ALEATORIO
+        // ====================================================
+
+        else if (opcion == 7) {
+
+            MPI_Barrier(MPI_COMM_WORLD);
+
+            double inicio =
+                MPI_Wtime();
+
+
+            if (nodo != 0) {
+
+                int cantidad =
+                    elementosPorTrabajador;
+
+                int inicioGlobal =
+                    (nodo - 1)
+                    * elementosPorTrabajador;
+
+                int finGlobal =
+                    inicioGlobal
+                    + cantidad
+                    - 1;
+
+
+                std::cout
+                    << "\nPC: "
+                    << nombrePC
+                    << " | MPI: "
+                    << nodo
+                    << " | Generando A["
+                    << inicioGlobal
+                    << "] - A["
+                    << finGlobal
+                    << "]"
+                    << std::endl;
+
+
+                int* parte =
+                    new int[cantidad];
+
+
+                operaciones.llenarAleatorioMPI(
+                    parte,
+                    cantidad,
+                    nombrePC,
+                    nodo,
+                    inicioGlobal
+                );
+
+
+                MPI_Send(
+                    parte,
+                    cantidad,
+                    MPI_INT,
+                    0,
+                    200,
+                    MPI_COMM_WORLD
+                );
+
+
+                delete[] parte;
+            }
+
+            else {
+
+                if (A == nullptr) {
+
+                    A =
+                        new int[tamanio];
+                }
+
+
+                for (
+                    int trabajador = 1;
+                    trabajador < totalNodos;
+                    trabajador++
+                ) {
+
+                    int inicioGlobal =
+                        (trabajador - 1)
+                        * elementosPorTrabajador;
+
+
+                    MPI_Recv(
+                        A + inicioGlobal,
+                        elementosPorTrabajador,
+                        MPI_INT,
+                        trabajador,
+                        200,
+                        MPI_COMM_WORLD,
+                        MPI_STATUS_IGNORE
+                    );
+                }
+            }
+
+
+            MPI_Barrier(MPI_COMM_WORLD);
+
+            double fin =
+                MPI_Wtime();
+
+
+            if (nodo == 0) {
+
+                std::cout
+                    << "\nArreglo aleatorio generado correctamente.\n";
+
+                std::cout
+                    << "Elementos: "
+                    << tamanio
+                    << std::endl;
+
+                std::cout
+                    << "Rango: 1 - 1000000\n";
+
+                std::cout
+                    << "Tiempo distribuido: "
+                    << (fin - inicio)
+                    << " segundos\n";
+            }
+        }
+
+
+        // ====================================================
+        // 8. SUMATORIA
+        // ====================================================
+
+        else if (opcion == 8) {
+
+            MPI_Barrier(MPI_COMM_WORLD);
+
+            double inicio =
+                MPI_Wtime();
+
+
+            long long sumaParcial = 0;
+            long long sumaTotal = 0;
+
+
+            if (nodo == 0) {
+
+                for (
+                    int trabajador = 1;
+                    trabajador < totalNodos;
+                    trabajador++
+                ) {
+
+                    int inicioGlobal =
+                        (trabajador - 1)
+                        * elementosPorTrabajador;
+
+
+                    MPI_Send(
+                        A + inicioGlobal,
+                        elementosPorTrabajador,
+                        MPI_INT,
+                        trabajador,
+                        300,
+                        MPI_COMM_WORLD
+                    );
+                }
+            }
+
+            else {
+
+                int cantidad =
+                    elementosPorTrabajador;
+
+                int inicioGlobal =
+                    (nodo - 1)
+                    * elementosPorTrabajador;
+
+
+                int* parte =
+                    new int[cantidad];
+
+
+                MPI_Recv(
+                    parte,
+                    cantidad,
+                    MPI_INT,
+                    0,
+                    300,
+                    MPI_COMM_WORLD,
+                    MPI_STATUS_IGNORE
+                );
+
+
+                sumaParcial =
+                    operaciones.sumatoriaMPI(
+                        parte,
+                        cantidad,
+                        nombrePC,
+                        nodo,
+                        inicioGlobal
+                    );
+
+
+                std::cout
+                    << "\nPC: "
+                    << nombrePC
+                    << " | MPI: "
+                    << nodo
+                    << " | SUMA PARCIAL: "
+                    << sumaParcial
+                    << std::endl;
+
+
+                delete[] parte;
+            }
+
+
+            MPI_Reduce(
+                &sumaParcial,
+                &sumaTotal,
                 1,
                 MPI_LONG_LONG,
+                MPI_SUM,
                 0,
                 MPI_COMM_WORLD
             );
 
-            arregloGenerado =
-                generado == 1;
+
+            MPI_Barrier(MPI_COMM_WORLD);
+
+            double fin =
+                MPI_Wtime();
+
+
+            if (nodo == 0) {
+
+                std::cout
+                    << "\n====================================\n";
+
+                std::cout
+                    << "SUMATORIA TOTAL: "
+                    << sumaTotal
+                    << std::endl;
+
+                std::cout
+                    << "Tiempo distribuido: "
+                    << (fin - inicio)
+                    << " segundos\n";
+
+                std::cout
+                    << "====================================\n";
+            }
         }
 
+
         // ====================================================
-        // OPCION 2
+        // 9. PROMEDIO
         // ====================================================
 
-        else if (opcion == 2)
-        {
-            int generado =
-                arregloGenerado ? 1 : 0;
+        else if (opcion == 9) {
 
-            MPI_Bcast(
-                &generado,
-                1,
-                MPI_INT,
-                0,
-                MPI_COMM_WORLD
-            );
+            MPI_Barrier(MPI_COMM_WORLD);
 
-            if (!generado)
-            {
-                if (rank == 0)
-                {
-                    std::cout
-                        << "\nPrimero debe generar el arreglo.\n";
+            double inicio =
+                MPI_Wtime();
+
+
+            long long sumaParcial = 0;
+            long long sumaTotal = 0;
+
+
+            if (nodo == 0) {
+
+                for (
+                    int trabajador = 1;
+                    trabajador < totalNodos;
+                    trabajador++
+                ) {
+
+                    int inicioGlobal =
+                        (trabajador - 1)
+                        * elementosPorTrabajador;
+
+
+                    MPI_Send(
+                        A + inicioGlobal,
+                        elementosPorTrabajador,
+                        MPI_INT,
+                        trabajador,
+                        400,
+                        MPI_COMM_WORLD
+                    );
                 }
-
-                continue;
             }
 
-            if (rank == 0)
-            {
-                int* copiaSecuencial =
-                    new int[n];
+            else {
 
-                int* copiaParalela =
-                    new int[n];
+                int cantidad =
+                    elementosPorTrabajador;
 
-                for (long long i = 0; i < n; i++)
-                {
-                    copiaSecuencial[i] = arreglo[i];
-                    copiaParalela[i] = arreglo[i];
-                }
+                int inicioGlobal =
+                    (nodo - 1)
+                    * elementosPorTrabajador;
 
-                // --------------------------------------------
-                // ORDENAMIENTO SECUENCIAL
-                // --------------------------------------------
 
-                int* auxiliar =
-                    new int[n];
+                int* parte =
+                    new int[cantidad];
 
-                double inicioSec =
-                    MPI_Wtime();
 
-                mergeSortSecuencial(
-                    copiaSecuencial,
-                    auxiliar,
+                MPI_Recv(
+                    parte,
+                    cantidad,
+                    MPI_INT,
                     0,
-                    n - 1
+                    400,
+                    MPI_COMM_WORLD,
+                    MPI_STATUS_IGNORE
                 );
 
-                double finSec =
-                    MPI_Wtime();
 
-                tiempos.ordenamientoSecuencial =
-                    finSec - inicioSec;
+                sumaParcial =
+                    operaciones.sumatoriaMPI(
+                        parte,
+                        cantidad,
+                        nombrePC,
+                        nodo,
+                        inicioGlobal
+                    );
 
-                delete[] auxiliar;
-
-                // --------------------------------------------
-                // ORDENAMIENTO PARALELO
-                // --------------------------------------------
-
-                double inicioPar =
-                    MPI_Wtime();
-
-                mergeSortParalelo(
-                    copiaParalela,
-                    n
-                );
-
-                double finPar =
-                    MPI_Wtime();
-
-                tiempos.ordenamientoParalelo =
-                    finPar - inicioPar;
-
-                // --------------------------------------------
-                // CONSERVAR ARREGLO PARALELO
-                // --------------------------------------------
-
-                delete[] arreglo;
-
-                arreglo = copiaParalela;
-
-                copiaParalela = nullptr;
-
-                arregloOrdenado = true;
 
                 std::cout
+                    << "\nPC: "
+                    << nombrePC
+                    << " | MPI: "
+                    << nodo
+                    << " | Suma para promedio: "
+                    << sumaParcial
+                    << std::endl;
+
+
+                delete[] parte;
+            }
+
+
+            MPI_Reduce(
+                &sumaParcial,
+                &sumaTotal,
+                1,
+                MPI_LONG_LONG,
+                MPI_SUM,
+                0,
+                MPI_COMM_WORLD
+            );
+
+
+            MPI_Barrier(MPI_COMM_WORLD);
+
+            double fin =
+                MPI_Wtime();
+
+
+            if (nodo == 0) {
+
+                double promedioTotal =
+                    static_cast<double>(
+                        sumaTotal
+                    ) / tamanio;
+
+
+                std::cout
+                    << "\n====================================\n";
+
+                std::cout
+                    << "PROMEDIO TOTAL: "
                     << std::fixed
-                    << std::setprecision(8)
-                    << "\nOrdenamiento terminado.\n"
-                    << "Merge Sort Secuencial: "
-                    << tiempos.ordenamientoSecuencial
-                    << " s\n"
-                    << "Merge Sort OpenMP:     "
-                    << tiempos.ordenamientoParalelo
-                    << " s\n";
+                    << std::setprecision(6)
+                    << promedioTotal
+                    << std::endl;
 
-                if (tiempos.ordenamientoParalelo > 0)
-                {
-                    std::cout
-                        << "Speedup: "
-                        << tiempos.ordenamientoSecuencial /
-                        tiempos.ordenamientoParalelo
-                        << "x\n";
-                }
+                std::cout
+                    << "Tiempo distribuido: "
+                    << (fin - inicio)
+                    << " segundos\n";
 
-                if (n <= 100)
-                {
-                    std::cout
-                        << "\nArreglo ordenado:\n";
-
-                    mostrarArreglo(
-                        arreglo,
-                        n,
-                        log
-                    );
-                }
-
-                delete[] copiaSecuencial;
+                std::cout
+                    << "====================================\n";
             }
-
-            int ordenado =
-                arregloOrdenado ? 1 : 0;
-
-            MPI_Bcast(
-                &ordenado,
-                1,
-                MPI_INT,
-                0,
-                MPI_COMM_WORLD
-            );
-
-            arregloOrdenado =
-                ordenado == 1;
         }
 
+
         // ====================================================
-        // OPCION 3
-        // BUSQUEDA SECUENCIAL
+        // 10. MAXIMO
         // ====================================================
 
-        else if (opcion == 3)
-        {
-            int generado =
-                arregloGenerado ? 1 : 0;
-
-            MPI_Bcast(
-                &generado,
-                1,
-                MPI_INT,
-                0,
-                MPI_COMM_WORLD
-            );
-
-            if (!generado)
-            {
-                if (rank == 0)
-                {
-                    std::cout
-                        << "\nPrimero debe generar el arreglo.\n";
-                }
-
-                continue;
-            }
-
-            int target = 0;
-
-            if (rank == 0)
-            {
-                std::cout
-                    << "\nValor a buscar: ";
-
-                std::cin >> target;
-            }
-
-            MPI_Bcast(
-                &target,
-                1,
-                MPI_INT,
-                0,
-                MPI_COMM_WORLD
-            );
-
-            bool detallado =
-                n <= 100;
-
-            // --------------------------------------------
-            // LOCAL OPENMP
-            // --------------------------------------------
-
-            long long resultadoLocal = -1;
-
-            if (rank == 0)
-            {
-                double inicio =
-                    MPI_Wtime();
-
-                resultadoLocal =
-                    busquedaLinealOpenMP(
-                        arreglo,
-                        n,
-                        target,
-                        0,
-                        detallado,
-                        log,
-                        rank,
-                        equipo
-                    );
-
-                double fin =
-                    MPI_Wtime();
-
-                tiempos.busquedaSecuencialLocal =
-                    fin - inicio;
-
-                std::cout
-                    << "\n----- BUSQUEDA SECUENCIAL LOCAL -----\n";
-
-                if (resultadoLocal != -1)
-                {
-                    std::cout
-                        << "Elemento encontrado en indice: "
-                        << resultadoLocal << "\n";
-                }
-                else
-                {
-                    std::cout
-                        << "Elemento NO encontrado.\n";
-                }
-
-                std::cout
-                    << "Tiempo: "
-                    << tiempos.busquedaSecuencialLocal
-                    << " s\n";
-            }
+        else if (opcion == 10) {
 
             MPI_Barrier(MPI_COMM_WORLD);
 
-            // --------------------------------------------
-            // DISTRIBUIDA
-            // --------------------------------------------
+            double inicio =
+                MPI_Wtime();
 
-            double tiempoDistribuido = 0;
 
-            long long resultadoDistribuido =
-                ejecutarBusquedaSecuencialDistribuida(
-                    arreglo,
-                    n,
-                    target,
-                    rank,
-                    procesos,
-                    detallado,
-                    log,
-                    equipo,
-                    tiempoDistribuido
+            int maximoParcial =
+                INT_MIN;
+
+            int maximoTotal =
+                INT_MIN;
+
+
+            if (nodo == 0) {
+
+                for (
+                    int trabajador = 1;
+                    trabajador < totalNodos;
+                    trabajador++
+                ) {
+
+                    int inicioGlobal =
+                        (trabajador - 1)
+                        * elementosPorTrabajador;
+
+
+                    MPI_Send(
+                        A + inicioGlobal,
+                        elementosPorTrabajador,
+                        MPI_INT,
+                        trabajador,
+                        500,
+                        MPI_COMM_WORLD
+                    );
+                }
+            }
+
+            else {
+
+                int cantidad =
+                    elementosPorTrabajador;
+
+                int inicioGlobal =
+                    (nodo - 1)
+                    * elementosPorTrabajador;
+
+
+                int* parte =
+                    new int[cantidad];
+
+
+                MPI_Recv(
+                    parte,
+                    cantidad,
+                    MPI_INT,
+                    0,
+                    500,
+                    MPI_COMM_WORLD,
+                    MPI_STATUS_IGNORE
                 );
 
-            if (rank == 0)
-            {
-                tiempos.busquedaSecuencialDistribuida =
-                    tiempoDistribuido;
 
-                std::cout
-                    << "\n----- BUSQUEDA SECUENCIAL DISTRIBUIDA -----\n";
-
-                if (resultadoDistribuido != -1)
-                {
-                    std::cout
-                        << "Elemento encontrado en indice global: "
-                        << resultadoDistribuido << "\n";
-                }
-                else
-                {
-                    std::cout
-                        << "Elemento NO encontrado.\n";
-                }
-
-                std::cout
-                    << "Tiempo MPI + OpenMP: "
-                    << tiempoDistribuido
-                    << " s\n";
-
-                if (tiempoDistribuido > 0)
-                {
-                    std::cout
-                        << "Speedup Local/Distribuido: "
-                        << tiempos.busquedaSecuencialLocal /
-                        tiempoDistribuido
-                        << "x\n";
-                }
-            }
-        }
-
-        // ====================================================
-        // OPCION 4
-        // BUSQUEDA BINARIA
-        // ====================================================
-
-        else if (opcion == 4)
-        {
-            int generado =
-                arregloGenerado ? 1 : 0;
-
-            int ordenado =
-                arregloOrdenado ? 1 : 0;
-
-            MPI_Bcast(
-                &generado,
-                1,
-                MPI_INT,
-                0,
-                MPI_COMM_WORLD
-            );
-
-            MPI_Bcast(
-                &ordenado,
-                1,
-                MPI_INT,
-                0,
-                MPI_COMM_WORLD
-            );
-
-            if (!generado || !ordenado)
-            {
-                if (rank == 0)
-                {
-                    std::cout
-                        << "\nDebe generar y ordenar "
-                        << "el arreglo antes de usar "
-                        << "busqueda binaria.\n";
-                }
-
-                continue;
-            }
-
-            int target = 0;
-
-            if (rank == 0)
-            {
-                std::cout
-                    << "\nValor a buscar: ";
-
-                std::cin >> target;
-            }
-
-            MPI_Bcast(
-                &target,
-                1,
-                MPI_INT,
-                0,
-                MPI_COMM_WORLD
-            );
-
-            bool detallado =
-                n <= 100;
-
-            // --------------------------------------------
-            // BINARIA LOCAL
-            // --------------------------------------------
-
-            long long resultadoLocal = -1;
-
-            if (rank == 0)
-            {
-                double inicio =
-                    MPI_Wtime();
-
-                resultadoLocal =
-                    busquedaBinariaOpenMP(
-                        arreglo,
-                        n,
-                        target,
-                        0,
-                        detallado,
-                        log,
-                        rank,
-                        equipo
+                maximoParcial =
+                    operaciones.maximoMPI(
+                        parte,
+                        cantidad,
+                        nombrePC,
+                        nodo,
+                        inicioGlobal
                     );
 
-                double fin =
-                    MPI_Wtime();
-
-                tiempos.busquedaBinariaLocal =
-                    fin - inicio;
 
                 std::cout
-                    << "\n----- BUSQUEDA BINARIA LOCAL -----\n";
+                    << "\nPC: "
+                    << nombrePC
+                    << " | MPI: "
+                    << nodo
+                    << " | MAXIMO PARCIAL: "
+                    << maximoParcial
+                    << std::endl;
 
-                if (resultadoLocal != -1)
-                {
-                    std::cout
-                        << "Elemento encontrado en indice: "
-                        << resultadoLocal << "\n";
-                }
-                else
-                {
-                    std::cout
-                        << "Elemento NO encontrado.\n";
-                }
 
-                std::cout
-                    << "Tiempo: "
-                    << tiempos.busquedaBinariaLocal
-                    << " s\n";
+                delete[] parte;
             }
+
+
+            MPI_Reduce(
+                &maximoParcial,
+                &maximoTotal,
+                1,
+                MPI_INT,
+                MPI_MAX,
+                0,
+                MPI_COMM_WORLD
+            );
+
 
             MPI_Barrier(MPI_COMM_WORLD);
 
-            // --------------------------------------------
-            // BINARIA DISTRIBUIDA
-            // --------------------------------------------
+            double fin =
+                MPI_Wtime();
 
-            double tiempoDistribuido = 0;
 
-            long long resultadoDistribuido =
-                ejecutarBusquedaBinariaDistribuida(
-                    arreglo,
-                    n,
-                    target,
-                    rank,
-                    procesos,
-                    detallado,
-                    log,
-                    equipo,
-                    tiempoDistribuido
-                );
-
-            if (rank == 0)
-            {
-                tiempos.busquedaBinariaDistribuida =
-                    tiempoDistribuido;
+            if (nodo == 0) {
 
                 std::cout
-                    << "\n----- BUSQUEDA BINARIA DISTRIBUIDA -----\n";
-
-                if (resultadoDistribuido != -1)
-                {
-                    std::cout
-                        << "Elemento encontrado en indice global: "
-                        << resultadoDistribuido << "\n";
-                }
-                else
-                {
-                    std::cout
-                        << "Elemento NO encontrado.\n";
-                }
+                    << "\n====================================\n";
 
                 std::cout
-                    << "Tiempo MPI + OpenMP: "
-                    << tiempoDistribuido
-                    << " s\n";
+                    << "MAXIMO TOTAL: "
+                    << maximoTotal
+                    << std::endl;
 
-                if (tiempoDistribuido > 0)
-                {
-                    std::cout
-                        << "Speedup Local/Distribuido: "
-                        << tiempos.busquedaBinariaLocal /
-                        tiempoDistribuido
-                        << "x\n";
-                }
+                std::cout
+                    << "Tiempo distribuido: "
+                    << (fin - inicio)
+                    << " segundos\n";
+
+                std::cout
+                    << "====================================\n";
             }
         }
 
+
         // ====================================================
-        // OPCION 5
+        // 11. MINIMO
         // ====================================================
 
-        else if (opcion == 5)
-        {
-            if (rank == 0)
-            {
-                mostrarComparativa(
-                    tiempos,
-                    procesos
+        else if (opcion == 11) {
+
+            MPI_Barrier(MPI_COMM_WORLD);
+
+            double inicio =
+                MPI_Wtime();
+
+
+            int minimoParcial =
+                INT_MAX;
+
+            int minimoTotal =
+                INT_MAX;
+
+
+            if (nodo == 0) {
+
+                for (
+                    int trabajador = 1;
+                    trabajador < totalNodos;
+                    trabajador++
+                ) {
+
+                    int inicioGlobal =
+                        (trabajador - 1)
+                        * elementosPorTrabajador;
+
+
+                    MPI_Send(
+                        A + inicioGlobal,
+                        elementosPorTrabajador,
+                        MPI_INT,
+                        trabajador,
+                        600,
+                        MPI_COMM_WORLD
+                    );
+                }
+            }
+
+            else {
+
+                int cantidad =
+                    elementosPorTrabajador;
+
+                int inicioGlobal =
+                    (nodo - 1)
+                    * elementosPorTrabajador;
+
+
+                int* parte =
+                    new int[cantidad];
+
+
+                MPI_Recv(
+                    parte,
+                    cantidad,
+                    MPI_INT,
+                    0,
+                    600,
+                    MPI_COMM_WORLD,
+                    MPI_STATUS_IGNORE
                 );
-            }
-        }
 
-        // ====================================================
-        // OPCION 6
-        // ====================================================
 
-        else if (opcion == 6)
-        {
-            if (rank == 0)
-            {
+                minimoParcial =
+                    operaciones.minimoMPI(
+                        parte,
+                        cantidad,
+                        nombrePC,
+                        nodo,
+                        inicioGlobal
+                    );
+
+
                 std::cout
-                    << "\nFinalizando programa...\n";
+                    << "\nPC: "
+                    << nombrePC
+                    << " | MPI: "
+                    << nodo
+                    << " | MINIMO PARCIAL: "
+                    << minimoParcial
+                    << std::endl;
+
+
+                delete[] parte;
             }
 
-            escribirLog(
-                log,
-                "Proceso MPI finalizado."
+
+            MPI_Reduce(
+                &minimoParcial,
+                &minimoTotal,
+                1,
+                MPI_INT,
+                MPI_MIN,
+                0,
+                MPI_COMM_WORLD
             );
-        }
 
-        else
-        {
-            if (rank == 0)
-            {
+
+            MPI_Barrier(MPI_COMM_WORLD);
+
+            double fin =
+                MPI_Wtime();
+
+
+            if (nodo == 0) {
+
                 std::cout
-                    << "\nOpcion invalida.\n";
+                    << "\n====================================\n";
+
+                std::cout
+                    << "MINIMO TOTAL: "
+                    << minimoTotal
+                    << std::endl;
+
+                std::cout
+                    << "Tiempo distribuido: "
+                    << (fin - inicio)
+                    << " segundos\n";
+
+                std::cout
+                    << "====================================\n";
             }
         }
 
-        MPI_Barrier(MPI_COMM_WORLD);
 
-    } while (opcion != 6);
+        // ====================================================
+        // OPCION INVALIDA
+        // ====================================================
+
+        else if (opcion != 0) {
+
+            if (nodo == 0) {
+
+                std::cout
+                    << "\nOpcion no valida.\n";
+            }
+        }
+
+
+    } while (opcion != 0);
+
 
     // ========================================================
     // LIBERAR MEMORIA
     // ========================================================
 
-    if (rank == 0 &&
-        arreglo != nullptr)
-    {
-        delete[] arreglo;
-        arreglo = nullptr;
+    if (A != nullptr) {
+
+        delete[] A;
+
+        A = nullptr;
     }
 
-    if (log.is_open())
-    {
-        log.close();
-    }
+
+    // ========================================================
+    // FINALIZAR MPI
+    // ========================================================
 
     MPI_Finalize();
 
